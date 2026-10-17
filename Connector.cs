@@ -185,6 +185,13 @@ namespace LiveSplit.UI.Components
             NWA_NO_GAME_RUNNING,
             NWA_ERROR
         }
+        private enum Backend
+        {
+            NONE,
+            NWA,
+            USB2SNES,
+            USB2SNES_LEGACY
+        }
         private const int MaxConsecutiveFailedReads = 10;
         private string usb2snesHost = "localhost";
         private int usb2snesPort = 23074;
@@ -192,6 +199,7 @@ namespace LiveSplit.UI.Components
         private ConnectorError _error = ConnectorError.NONE;
         private ConnectorState _state;
         private int _failedReads = 0;
+        private Backend _lastBackend = Backend.NONE;
         public async Task Reset()
         {
             await connector.Reset();
@@ -236,28 +244,39 @@ namespace LiveSplit.UI.Components
             if (connector != null)
                 connector.Disconnect();
             connector = null;
-            Debug.WriteLine("Trying to connect to NWA");
-            if (await ConnectNWA())
+            var backends = new List<Backend> { Backend.NWA, Backend.USB2SNES, Backend.USB2SNES_LEGACY };
+            if (_lastBackend != Backend.NONE)
             {
-                _state = ConnectorState.CONNECTED;
-                return true;
+                backends.Remove(_lastBackend);
+                backends.Insert(0, _lastBackend);
             }
-            Debug.WriteLine("--Trying to connect to Usb2snes");
-            // default port
-            if (await ConnectUsb2Snes(usb2snesPort))
+            foreach (var backend in backends)
             {
-                _state = ConnectorState.CONNECTED;
-                return true;
-            }
-            // legacy port
-            Debug.WriteLine("--Trying to connect to Usb2snes legacy");
-            if (await ConnectUsb2Snes(8080))
-            {
-                _state = ConnectorState.CONNECTED;
-                return true;
+                if (await ConnectBackend(backend))
+                {
+                    _lastBackend = backend;
+                    _state = ConnectorState.CONNECTED;
+                    return true;
+                }
             }
             _error = ConnectorError.NO_SERVER;
             _state = ConnectorState.NONE;
+            return false;
+        }
+        private async Task<bool> ConnectBackend(Backend backend)
+        {
+            switch (backend)
+            {
+                case Backend.NWA:
+                    Debug.WriteLine("Trying to connect to NWA");
+                    return await ConnectNWA();
+                case Backend.USB2SNES:
+                    Debug.WriteLine("--Trying to connect to Usb2snes");
+                    return await ConnectUsb2Snes(usb2snesPort);
+                case Backend.USB2SNES_LEGACY:
+                    Debug.WriteLine("--Trying to connect to Usb2snes legacy");
+                    return await ConnectUsb2Snes(8080);
+            }
             return false;
         }
         private async Task<bool> ConnectNWA()

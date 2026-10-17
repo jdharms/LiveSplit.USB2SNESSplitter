@@ -43,6 +43,9 @@ namespace LiveSplit.UI.Components
         // message is hidden, the window will be smaller than the layout settings specify. So, we delay showing the status message for a bit
         // to give LiveSplit a chance to lock in the correct size.
         private readonly TimeSpan ShowStatusMessageDelay = TimeSpan.FromSeconds(0.5);
+        // When a connection that was working drops, retry quickly and keep showing the ready state for a while, so that brief
+        // drops (like the SNES being soft reset, which makes some servers close the connection) don't flicker the status message.
+        private readonly TimeSpan ReconnectGracePeriod = TimeSpan.FromSeconds(2);
 
         public string ComponentName => "USB2SNES Auto Splitter";
 
@@ -71,6 +74,7 @@ namespace LiveSplit.UI.Components
         private List<string> _splits;
         private ConfigState _config_state;
         private DateTime _first_draw_time = DateTime.MinValue;
+        private DateTime _last_good_read_time = DateTime.MinValue;
         private Stopwatch _ready_timer;
         private bool _inTimer;
         private Connector _connector;
@@ -154,26 +158,27 @@ namespace LiveSplit.UI.Components
                 {
                     await _connector.SetName("LiveSplit AutoSplitter");
                     _ready_attempt = 0;
-                    //await _connector.GetReady();
                 }
                 _stateChanged = true;
             }
-            else
+            if (_connector.State() == Connector.ConnectorState.CONNECTED)
             {
-                if (_connector.State() == Connector.ConnectorState.CONNECTED)
+                _stateChanged = true;
+                Debug.WriteLine("Ready attempt : {0}", _ready_attempt);
+                bool ready = await _connector.GetReady();
+                if (ready == false)
+                    _ready_attempt++;
+                if (_ready_attempt == 5)
                 {
-                    _stateChanged = true;
-                    Debug.WriteLine("Ready attempt : {0}", _ready_attempt);
-                    bool ready = await _connector.GetReady();
-                    if (ready == false)
-                        _ready_attempt++;
-                    if (_ready_attempt == 5)
-                    {
-                        _connector.Disconnect();
-                        _ready_attempt = 0;
-                    }
+                    _connector.Disconnect();
+                    _ready_attempt = 0;
                 }
             }
+        }
+
+        private bool InReconnectGracePeriod()
+        {
+            return (DateTime.Now - _last_good_read_time) < ReconnectGracePeriod;
         }
 
         private void ResetSplitProgress()
@@ -313,8 +318,19 @@ namespace LiveSplit.UI.Components
             }
             finally
             {
+                UpdateTimerInterval();
                 _inTimer = false;
             }
+        }
+
+        private void UpdateTimerInterval()
+        {
+            if (_config_state == ConfigState.READY && _connector.State() == Connector.ConnectorState.READY)
+                _update_timer.Interval = 33;
+            else if (InReconnectGracePeriod())
+                _update_timer.Interval = 250;
+            else
+                _update_timer.Interval = 1000;
         }
 
         public async Task UpdateSplits()
@@ -329,13 +345,8 @@ namespace LiveSplit.UI.Components
                 await CheckConnection();
             }
 
-            if (_config_state != ConfigState.READY || _connector.State() != Connector.ConnectorState.READY)
+            if (_config_state == ConfigState.READY && _connector.State() == Connector.ConnectorState.READY)
             {
-                _update_timer.Interval = 1000;
-            }
-            else
-            {
-                _update_timer.Interval = 33;
                 if (_state.CurrentPhase == TimerPhase.NotRunning)
                 {
                     if (_settings.Config.autostart != null && _settings.Config.autostart.active == "1")
@@ -411,16 +422,15 @@ namespace LiveSplit.UI.Components
             catch
             {
                 Debug.WriteLine("doCheckSplit: Exception getting address");
-                await CheckConnection();
                 return false;
             }
 
             if ((null == data) || (data.Count != addressSizePairs.Count))
             {
                 Debug.WriteLine("doCheckSplit: Get address failed to return result");
-                await CheckConnection();
                 return false;
             }
+            _last_good_read_time = DateTime.Now;
 
             uint value = (uint)data[0][0];
             uint word = value + ((uint)data[0][1] << 8);
@@ -456,7 +466,8 @@ namespace LiveSplit.UI.Components
             Color borderColor = _error_color;
             string statusMessage = string.Empty;
 
-            if (_config_state == ConfigState.READY && _connector.State() == Connector.ConnectorState.READY)
+            bool connectorReady = _connector.State() == Connector.ConnectorState.READY || InReconnectGracePeriod();
+            if (_config_state == ConfigState.READY && connectorReady)
             {
                 borderColor = _ok_color;
 

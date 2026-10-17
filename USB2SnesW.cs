@@ -222,6 +222,8 @@ namespace USB2SnesW
 
         public async Task<List<byte[]>> GetAddress(List<Tuple<uint, uint>> addressSizePairs)
         {
+            if (ws.ReadyState != WebSocketState.Open)
+                throw new InvalidOperationException("Usb2Snes connection is not open");
             var result = new List<byte[]>();
             if (_pendingRead != null)
             {
